@@ -1,0 +1,262 @@
+Per questo articolo utilizzerò due macchine che montano un sistema operativo linux di tipo debian like, nello specifico una raspbian montata su una scheda raspberry pi 3B, ed una debian 8.4 Jessie su un pc x86_64.
+
+In generale quindi occorrono:
+* due computer di diverse architetture ( vanno bene anche uguali, ma diventerebbe troppo facile )
+* due sistemi operativi debian like ( debian, raspbian, ubuntu ecc... ) installati, in rete e funzionanti
+* competenze minime di amministrazione di un sistema operativo linux, come installazione di un programma mancante o edit di un file in /etc
+
+Tratteremo questi argomenti:
+* [https://en.wikipedia.org/wiki/GNU_toolchain toolchain di compilazione]
+* [https://en.wikipedia.org/wiki/Distcc distcc]
+* [https://en.wikipedia.org/wiki/Ccache ccache]
+
+Non ci occuperemo di Avahi quindi gli indirizzi IP saranno tutti hardcoded.
+
+Le informazioni contenute in questo articolo sono un riassunto di risorse come:
+* man pages
+* Debian Wiki
+* Vari blog e risorse in rete
+
+Le due macchine che useremo ad esempio, sono collegate in rete wifi nella stessa subnet (30.20.10.0/24) e si parlano:
+* Jessie, è un normale laptop HP, architettura x86_64, processore Intel a 2.5GHz con 4 core e 4 GB di ram, IP=30.20.10.245
+* Berry, è un Raspberry PI 3B, architettura armhf, processore ARMv8 a 64bit a 1.2GHz con 3 core e 1 GB di ram, IP=30.20.10.172
+
+==Cross compilatore==
+
+Appare evidente che non è possibile compilare direttamente su Jessie il codice di Berry, perchè questo non lo potrebbe eseguire.
+Per fare questo, dobbiamo far diventare Jessie un cross compilatore installando la tool-char armhf.
+<br>
+Jessie:
+<pre># echo "deb http://emdebian.org/tools/debian/ jessie main" >> /etc/apt/sources.list.d/crosstools.list</pre>
+<pre># curl http://emdebian.org/tools/debian/emdebian-toolchain-archive.key | apt-key add -</pre>
+<pre># dpkg --add-architecture armhf</pre>
+<pre># apt-get updateapt-get install crossbuild-essential-armhf</pre>
+<pre># echo "APT::Default-Release \"jessie\";" > /etc/apt/apt.conf.d/20defaultrelease</pre>
+
+A questo punto eseguendo i tool in /usr/bin/ che il cui nome inizia con arm*, Jessie è in grado di compilare un file sorgente C per essere letto da una architettura che non è la sua.
+Creiamo un file chiamandolo hello.c fatto così:
+
+<pre>#include <stdio.h>
+int main() {  
+   printf("Hello World!\n");
+   return 0;
+}</pre>
+
+Compiliamolo con la tool-chain nativa di Jessie:
+
+<pre># gcc -o hello.x86_64 hello.c</pre>
+
+Vediamo cosa c'è dentro:
+
+<pre># file hello.x86_64</pre>
+
+<pre>hello.x86_64: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.6.32, BuildID[sha1]=67824d4c48002e2cc00cc7125d3aa38d08ce7406, not stripped</pre>
+
+Benissimo, Jessie è ancora capace di compilare per la sua architettura.
+
+<pre># ./hello.x86_64</pre>
+<pre>Hello World!</pre>
+
+Ora compiliamo per ARM:
+
+<pre># /usr/bin/arm-linux-gnueabihf-gcc -o hello.arm hello.c</pre>
+
+Vediamo cosa c'è dentro:
+
+<pre># file hello.arm</pre>
+
+<pre>hello.arm: ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-armhf.so.3, for GNU/Linux 2.6.32, BuildID[sha1]=160db58fcc77923a215ce2a71d02813b3152a47d, not stripped</pre>
+
+Ovviamente questo eseguibile, non può essere eseguito da Jessie, infatti:
+
+<pre># ./hello.arm</pre>
+<pre>-su: ./hello.o: cannot execute binary file: Exec format error</pre>
+
+Però è un eseguibile, e se Berry lo lanciasse vedrebbe la scritta Hello World!
+
+A questo punto potremmo installare un compilatore per x86_64 anche su Berry, ma non sarebbe molto utile come server di compilazione viste le ridotte capacità computazionali.
+
+==Distcc==
+
+Va bene, ora dobbiamo insegnare a Berry come farsi compilare il codice dalla performante Jessie.
+Istalleremo su entrambe le macchine distcc, e saranno entrambi server e client di compilazione. Nello specifico però Jessie compilerà per tutti, Berry solo per se stesso.
+
+Su Jessie e Berry:
+<pre># apt-get install distcc</pre>
+
+Editiamo il file di configurazione di distcc che si trova in /etc/default/distcc
+<pre>STARTDISTCC="true"</pre>
+<pre>ALLOWEDNETS="127.0.0.1 30.20.10.0/24"</pre>
+Su Jessie:
+<pre>LISTENER="30.20.10.245</pre>
+Su Berry:
+<pre>LISTENER="30.20.10.172"</pre>
+
+Ci sono alri due parametri che si possono configurare, che per ora ognoriamo:
+<pre>NICE="10"</pre>
+Con un valore da 0 a 20, dice al demone distccd quanto essere 'carino' nei confronti degli altri processi.
+
+<pre>JOBS=""</pre>
+Dice al demone quanti job alla volta accettare. Una buona idea è impostare questo valore al numero di core della macchina su cui gira il demone. 
+
+Salviamo le modifiche ed avviamo i servizi:
+Su Jessie e Berry:
+<pre># service distcc restart</pre>
+
+Verifichiamo che il demone sia in ascolto.
+Su Jessie:
+<pre># service distcc status</pre>
+<pre>■ distcc.service - LSB: simple distributed compiler server
+   Loaded: loaded (/etc/init.d/distcc)
+   Active: active (running) since Tue 2016-05-10 15:52:20 UTC; 9s ago
+  Process: 26043 ExecStop=/etc/init.d/distcc stop (code=exited, status=0/SUCCESS)
+  Process: 26049 ExecStart=/etc/init.d/distcc start (code=exited, status=0/SUCCESS)
+   CGroup: /system.slice/distcc.service
+           ├─26054 /usr/bin/distccd --pid-file=/var/run/distccd.pid --log-file=/var/log/distccd.log --daemon --allow 127.0.0.1 --allow 30.20.10.0/24 --listen 30.20.10.245 --nice 10
+           ├─26055 /usr/bin/distccd --pid-file=/var/run/distccd.pid --log-file=/var/log/distccd.log --daemon --allow 127.0.0.1 --allow 30.20.10.0/24 --listen 30.20.10.245 --nice 10
+           ├─26057 /usr/bin/distccd --pid-file=/var/run/distccd.pid --log-file=/var/log/distccd.log --daemon --allow 127.0.0.1 --allow 30.20.10.0/24 --listen 30.20.10.245 --nice 10
+           ├─26058 /usr/bin/distccd --pid-file=/var/run/distccd.pid --log-file=/var/log/distccd.log --daemon --allow 127.0.0.1 --allow 30.20.10.0/24 --listen 30.20.10.245 --nice 10
+           ├─26059 /usr/bin/distccd --pid-file=/var/run/distccd.pid --log-file=/var/log/distccd.log --daemon --allow 127.0.0.1 --allow 30.20.10.0/24 --listen 30.20.10.245 --nice 10
+           ├─26060 /usr/bin/distccd --pid-file=/var/run/distccd.pid --log-file=/var/log/distccd.log --daemon --allow 127.0.0.1 --allow 30.20.10.0/24 --listen 30.20.10.245 --nice 10
+           └─26061 /usr/bin/distccd --pid-file=/var/run/distccd.pid --log-file=/var/log/distccd.log --daemon --allow 127.0.0.1 --allow 30.20.10.0/24 --listen 30.20.10.245 --nice 10</pre>
+
+<pre># netstat -pant | grep distcc</pre>
+<pre>tcp 0 0 30.20.10.245:3632 0.0.0.0:* LISTEN 26054/distccd</pre>
+
+E lo stesso può essere verificato su Berry.
+
+Ora abbiamo 2 server in ascolto ciascuno sul suo indirizzo alla porta di default 3632, ma non abbiamo ancora detto alla parte client che è quella che invia le compilazioni, dove andare a compilare.
+L'idea sarebbe che un client, possa dire a N server di compilazione di fare del lavoro per lui, e la lista dei server da utilizzare la prende dalla variabile d'ambiente DISTCC_HOSTS.
+
+Su Jessie:
+<pre># export DISTCC_HOSTS="30.20.10.245"</pre>
+Il client di Jessie invia compilazioni solo al demone che gira su Jessie.
+
+Su Berry:
+<pre># export DISTCC_HOSTS="30.20.10.245 30.20.10.171"</pre>
+Il client di Berry invia compilazioni al demone che gira su Jessie e di Berry.
+
+Verifichiamo che i job vengano distribuiti:
+Apriamo un terminale su Jessie e mostriamo il contenuto del log:
+<pre># tail -f /var/log/distccd.log</pre>
+
+Lanciamo una compilazione su Berry:
+<pre># distcc arm-linux-gnueabihf-gcc -c hello.c</pre>
+<pre># file hello.o</pre>
+<pre>hello.o: ELF 32-bit LSB relocatable, ARM, EABI5 version 1 (SYSV), not stripped</pre>
+
+Nel frattempo nel log di Jessie:
+<pre>distccd[26055] (dcc_job_summary) client: 30.20.10.172:51695 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:600ms arm-linux-gnueabihf-gcc hello.c</pre>
+
+Berry ha inviato il file hello.c dicendogli con quale tool-chain compilarlo, Jessie ha obbedito ed ha restituito hello.o a Berry.
+Jessie fa solo questo, non può linkare i binari *.o tra di loro, questa è una operazione che può fare solo Berry che lancia in giro per la rete le compilazioni e quando ha ricevuto tutti i file binari può linkarli.
+Per questo motivo è stata usata l'opzione -c ed il file hello.o non è eseguibile da riga di comando. 
+Se non avessimo usato l'opzione -c distcc di Berry si sarebbe accorto che doveva eseguire una operazione che non poteva fare ed avrebbe lanciato la compilazione in locale senza chiamare in causa Jessie.
+
+==Ccache==
+Possiamo velocizzare ancora di più la compilazione, specialmente se sullo stesso server vengono eseguite le stesse identiche compilazioni da diversi client.
+L'idea è di avere una cache locale di tutto quello che viene eseguito, e quando viene richiesto di compilare un sorgente già compilato, invece di ricompilarlo viene spedito il file binario cachato.
+
+Su Jessie e Berry installiamo ccache:
+<pre># apt-get install ccache</pre>
+
+ccache potrebbe lavorare anche da solo con il compilatore locale, ma la cosa bella è farlo lavorare assieme a distcc
+
+Diciamo a ccache quale compilatore usare impostando la variabile d'ambiente CCACHE_PREFIX.
+Su Jessie e Berry:
+<pre># export CCACHE_PREFIX="distcc"</pre>
+
+Su Berry, come prima, lanciamo una compilazione distribuita:
+<pre># ccache arm-linux-gnueabihf-gcc -c hello.c</pre>
+
+Sul log di Jessie leggiamo:
+<pre>distccd[26057] (dcc_job_summary) client: 30.20.10.172:51697 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:57ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/hello.tmp.BERRY.4206.i</pre>
+
+==Progetti con autotools==
+Per utilizziare tutto l'ambaradan nei progetti con autotools, bisogna impostare 2 variabili d'ambiente: CC e CXX.
+Queste variabili verranno lette dai vari configure per creare i Makefile che lanceranno il compilatore che abbiamo installato in maniera opportuna.
+
+Su Jessie e su Berry:
+<pre># export CC="ccache arm-linux-gnueabihf-gcc"</pre>
+<pre># export CXX="ccache arm-linux-gnueabihf-g++"</pre>
+
+Se invece avessimo voluto usare solo distcc senza ccache:
+<pre>export CC="distcc arm-linux-gnueabihf-gcc"</pre>
+<pre>export CXX="distcc arm-linux-gnueabihf-g++"</pre>
+
+Proviamo a compilare [https://www.gnu.org/software/screen/ screen] su Berry usando ccache:
+<pre># apt-get build-dep screen</pre>
+<pre># apt-get source screen</pre>
+<pre># cd /screen-4.2.1</pre>
+<pre># ./configure</pre>
+
+Guardiamo cosa c'è finito nel Makefile:
+<pre># cat Makefile | grep ccache</pre>
+<pre>CC = ccache arm-linux-gnueabihf-gcc</pre>
+<pre>CXX = ccache arm-linux-gnueabihf-g++</pre>
+
+Lanciamo la compilazione, dicendo di pompare un pò ora che ce lo possiamo permettere. Abbiamo a disposizione 8 core, ma con più macchine potrebbero diventare anche molti di più!
+<pre># make -j8</pre>
+8 job in parallelo, perchè stiamo usando il piccolo Berry in locale e la potente Jessie in remoto!
+
+Nel frattempo nel log Berry
+<pre>distccd[15026] (dcc_job_summary) client: 30.20.10.172:54984 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:79ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/kmapdef.tmp.BERRY.25703.i
+distccd[15027] (dcc_job_summary) client: 30.20.10.172:54988 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1271ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/misc.tmp.BERRY.25757.i
+distccd[15025] (dcc_job_summary) client: 30.20.10.172:54990 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:6293ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/fileio.tmp.BERRY.25739.i
+distccd[15024] (dcc_job_summary) client: 30.20.10.172:54992 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:12890ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/resize.tmp.BERRY.25748.i
+distccd[15028] (dcc_job_summary) client: 30.20.10.172:54994 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:12888ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/socket.tmp.BERRY.25752.i
+distccd[15026] (dcc_job_summary) client: 30.20.10.172:54998 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:5340ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/help.tmp.BERRY.25820.i
+distccd[15025] (dcc_job_summary) client: 30.20.10.172:55002 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:3821ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/attacher.tmp.BERRY.25831.i
+distccd[15027] (dcc_job_summary) client: 30.20.10.172:55000 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:6562ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/termcap.tmp.BERRY.25816.i
+distccd[15023] (dcc_job_summary) client: 30.20.10.172:54995 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:13315ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/window.tmp.BERRY.25792.i
+distccd[15024] (dcc_job_summary) client: 30.20.10.172:55008 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1640ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/braille_ts.tmp.BERRY.25882.i
+distccd[15028] (dcc_job_summary) client: 30.20.10.172:55009 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1630ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/logfile.tmp.BERRY.25887.i
+distccd[15027] (dcc_job_summary) client: 30.20.10.172:55015 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:147ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/teln.tmp.BERRY.25932.i
+distccd[15023] (dcc_job_summary) client: 30.20.10.172:55016 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:195ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/nethack.tmp.BERRY.25939.i
+distccd[15028] (dcc_job_summary) client: 30.20.10.172:55019 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1774ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/layout.tmp.BERRY.25963.i
+distccd[15026] (dcc_job_summary) client: 30.20.10.172:55013 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:2743ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/list_windo.tmp.BERRY.25914.i
+distccd[15024] (dcc_job_summary) client: 30.20.10.172:55018 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1826ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/canvas.tmp.BERRY.25957.i
+distccd[15025] (dcc_job_summary) client: 30.20.10.172:55017 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:3078ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/encoding.tmp.BERRY.25941.i
+</pre>
+
+E nel log di Jessie:
+<pre>distccd[27815] (dcc_job_summary) client: 30.20.10.172:52221 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:28ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/putenv.tmp.BERRY.25679.i
+distccd[27788] (dcc_job_summary) client: 30.20.10.172:52223 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:31ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/term.tmp.BERRY.25702.i
+distccd[27808] (dcc_job_summary) client: 30.20.10.172:52224 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:161ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/comm.tmp.BERRY.25719.i
+distccd[27819] (dcc_job_summary) client: 30.20.10.172:52227 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:453ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/search.tmp.BERRY.25753.i
+distccd[27782] (dcc_job_summary) client: 30.20.10.172:52225 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1744ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/ansi.tmp.BERRY.25738.i
+distccd[27768] (dcc_job_summary) client: 30.20.10.172:52229 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1134ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/mark.tmp.BERRY.25743.i
+distccd[27815] (dcc_job_summary) client: 30.20.10.172:52231 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1786ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/screen.tmp.BERRY.25746.i
+distccd[27808] (dcc_job_summary) client: 30.20.10.172:52235 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:229ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/loadav.tmp.BERRY.25812.i
+distccd[27788] (dcc_job_summary) client: 30.20.10.172:52233 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:5811ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/tty.tmp.BERRY.25793.i
+distccd[27782] (dcc_job_summary) client: 30.20.10.172:52239 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:784ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/utmp.tmp.BERRY.25810.i
+distccd[27768] (dcc_job_summary) client: 30.20.10.172:52241 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:181ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/pty.tmp.BERRY.25850.i
+distccd[27819] (dcc_job_summary) client: 30.20.10.172:52237 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:1044ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/input.tmp.BERRY.25826.i
+distccd[27808] (dcc_job_summary) client: 30.20.10.172:52243 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:3559ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/braille.tmp.BERRY.25866.i
+distccd[27815] (dcc_job_summary) client: 30.20.10.172:52242 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:5079ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/process.tmp.BERRY.25851.i
+distccd[27788] (dcc_job_summary) client: 30.20.10.172:52244 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:2923ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/acls.tmp.BERRY.25865.i
+distccd[27782] (dcc_job_summary) client: 30.20.10.172:52245 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:3912ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/display.tmp.BERRY.25864.i
+distccd[27768] (dcc_job_summary) client: 30.20.10.172:52250 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:560ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/list_displ.tmp.BERRY.25910.i
+distccd[27819] (dcc_job_summary) client: 30.20.10.172:52252 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:585ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/sched.tmp.BERRY.25913.i
+distccd[27808] (dcc_job_summary) client: 30.20.10.172:52248 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:657ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/list_gener.tmp.BERRY.25903.i
+distccd[27815] (dcc_job_summary) client: 30.20.10.172:52249 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:992ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/layer.tmp.BERRY.25897.i
+distccd[27788] (dcc_job_summary) client: 30.20.10.172:52258 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:812ms /usr/bin/arm-linux-gnueabihf-gcc /root/.ccache/tmp/viewport.tmp.BERRY.25974.i
+</pre>
+
+Il file compilato:
+<pre># file ./screen</pre>
+<pre>./screen: ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-armhf.so.3, for GNU/Linux 2.6.32, BuildID[sha1]=152c5536a2704d5474ba96c54edef4832559f9c6, not stripped</pre>
+
+===Note===
+Nella macchina client, è possibile ottenere informazioni di debug impostando la variabile d'ambiente DISTCC_VERBOSE che normalmente è a 0.
+<pre>export DISTCC_VERBOSE=1</pre>
+
+Quando impostiamo le variabili d'ambiente CC e CXX, che cosa succede se come compilatori usassimo gcc e g++?
+<pre>export CC="distcc gcc"</pre>
+<pre>export CXX="distcc g++"</pre>
+Succede che ogni macchina utilizzerà il proprio compilatore nativo, tutta la compilazione dei job avviene regolarmente, ma se i vari compilatori sono fatti per architetture diverse, alla fine i file binati non saranno linkabili tra di loro :)
+
+===Fine===
+L'ho fatta breve per avere da subito qualcosa di funzionante. Si sarebbe potuto fare di meglio, mettendo le varie export in file di configurazione della shell, usando dei nomi host invece che gli indirizzi statici ecc... però per il momento tenetevela così.
+
+<sub>Versione del documento: 1.0</sub>
