@@ -24,13 +24,18 @@ Le due macchine che useremo ad esempio, sono collegate in rete wifi nella stessa
 ==Cross compilatore==
 
 Appare evidente che non è possibile compilare direttamente su Jessie il codice di Berry, perchè questo non lo potrebbe eseguire.
-Per fare questo, dobbiamo far diventare Jessie un cross compilatore installando la tool-char armhf.
-<br>
+Per fare questo, dobbiamo far diventare Jessie un cross compilatore, in grado di generare file compilati per ARM, installando la tool-chain armhf.
+
 Jessie:
+Per prima cosa dobbiamo abilitare il repository Debian Cross-toolchains
 <pre># echo "deb http://emdebian.org/tools/debian/ jessie main" >> /etc/apt/sources.list.d/crosstools.list</pre>
 <pre># curl http://emdebian.org/tools/debian/emdebian-toolchain-archive.key | apt-key add -</pre>
+Ora abilitiamo l'architettura armhf
 <pre># dpkg --add-architecture armhf</pre>
-<pre># apt-get updateapt-get install crossbuild-essential-armhf</pre>
+Infine installiamo crossbuild-essential-armhf:
+<pre># apt-get update</pre>
+<pre># apt-get install crossbuild-essential-armhf</pre>
+Poichè ora abbiamo reso visibile il repository unstable, diciamo a debian che preferiamo il repo jessie:
 <pre># echo "APT::Default-Release \"jessie\";" > /etc/apt/apt.conf.d/20defaultrelease</pre>
 
 A questo punto eseguendo i tool in /usr/bin/ che il cui nome inizia con arm*, Jessie è in grado di compilare un file sorgente C per essere letto da una architettura che non è la sua.
@@ -257,6 +262,6 @@ Quando impostiamo le variabili d'ambiente CC e CXX, che cosa succede se come com
 Succede che ogni macchina utilizzerà il proprio compilatore nativo, tutta la compilazione dei job avviene regolarmente, ma se i vari compilatori sono fatti per architetture diverse, alla fine i file binati non saranno linkabili tra di loro :)
 
 ===Fine===
-L'ho fatta breve per avere da subito qualcosa di funzionante. Si sarebbe potuto fare di meglio, mettendo le varie export in file di configurazione della shell, usando dei nomi host invece che gli indirizzi statici ecc... però per il momento tenetevela così.
+L'ho fatta breve per avere da subito qualcosa di funzionante. Si sarebbe potuto fare di meglio, assegnando un utente dedicato con cui far girare il demone, mettendo le varie export in file di configurazione della shell, usando dei nomi host invece che gli indirizzi statici ecc... però per il momento tenetevela così :)
 
 <sub>Versione del documento: 1.0</sub>
