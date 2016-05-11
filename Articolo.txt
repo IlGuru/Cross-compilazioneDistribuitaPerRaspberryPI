@@ -181,7 +181,7 @@ Sul log di Jessie leggiamo:
 Per utilizziare tutto l'ambaradan nei progetti con autotools, bisogna impostare 2 variabili d'ambiente: CC e CXX.
 Queste variabili verranno lette dai vari configure per creare i Makefile che lanceranno il compilatore che abbiamo installato in maniera opportuna.
 
-Su Jessie e su Berry:
+Su Berry:
 <pre># export CC="ccache arm-linux-gnueabihf-gcc"</pre>
 <pre># export CXX="ccache arm-linux-gnueabihf-g++"</pre>
 
@@ -252,6 +252,17 @@ Il file compilato:
 <pre># file ./screen</pre>
 <pre>./screen: ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-armhf.so.3, for GNU/Linux 2.6.32, BuildID[sha1]=152c5536a2704d5474ba96c54edef4832559f9c6, not stripped</pre>
 
+==Compilazione distribuita di pacchetti deb==
+Una volta impostate tutte le variabili d'ambiente, la cross compilazione distribuita funziona automaticamente anche nella compilazione dei sorgenti dei repository debian.
+Esempio su Berry:
+<pre># export CC="ccache arm-linux-gnueabihf-gcc"</pre>
+<pre># export CXX="ccache arm-linux-gnueabihf-g++"</pre>
+<pre># apt-get build-dep screen</pre>
+<pre># apt-get source -b screen</pre>
+Ora apt-get oltre a scaricare i sorgenti, li compila e crea un archivio .deb che può essere installato così:
+<pre># dpkg -i screen-*.deb</pre>
+Nel log file di Jessie possiamo vedere il log di compilazione di tutti i jobs.
+
 ===Note===
 Nella macchina client, è possibile ottenere informazioni di debug impostando la variabile d'ambiente DISTCC_VERBOSE che normalmente è a 0.
 <pre>export DISTCC_VERBOSE=1</pre>
@@ -262,6 +273,13 @@ Quando impostiamo le variabili d'ambiente CC e CXX, che cosa succede se come com
 Succede che ogni macchina utilizzerà il proprio compilatore nativo, tutta la compilazione dei job avviene regolarmente, ma se i vari compilatori sono fatti per architetture diverse, alla fine i file binati non saranno linkabili tra di loro :)
 
 ===Fine===
-L'ho fatta breve per avere da subito qualcosa di funzionante. Si sarebbe potuto fare di meglio, assegnando un utente dedicato con cui far girare il demone, mettendo le varie export in file di configurazione della shell, usando dei nomi host invece che gli indirizzi statici ecc... però per il momento tenetevela così :)
+Ci sono alcune cose che si possono affinare:
+* Utilizzare un utente apposito con cui far girare il demone.
+* Inserire le varie export nel file bashrc principale o in quello degli utenti che faranno compilazioni.
+* Utilizzare dei nomi host invece che gli indirizzi ip statici.
+* Utilizzare il servizio Avahi per la ricerca automatica dei server in rete.
+ 
+In questo articolo l'ho fatta breve per avere da subito qualcosa di funzionante.
+Leggendo per bene le varie man pages le possibilità sono ancora maggiori, però per il momento tenetevela così :)
 
-<sub>Versione del documento: 1.0</sub>
+<sub>Versione del documento: 1.2</sub>
